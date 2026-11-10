@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 import base64
 import argparse
 import hashlib
@@ -75,11 +75,6 @@ class Config:
     tgbot_token: str = ""
     tgbot_chat_id: int = 0
     tgbot_proxy: str = ""
-    feishu_webhookurl: str = ""
-    feishu_secret: str = ""
-    feishu_app_id: str = ""
-    feishu_app_secret: str = ""
-    feishu_receive_id: str = ""
     ntfy_url: str = ""
     ntfy_topic: str = ""
     ntfy_user: str = ""
@@ -141,12 +136,8 @@ class MTClient:
             self.store.put(DID_KEY, self.did)
 
     def _log_http(self, method: str, url: str, req_headers: Dict[str, str], req_data: Any, resp: Any) -> None:
-        log_info(f"HTTP {method} {url}")
-        log_info(f"Request headers: {json.dumps(req_headers, ensure_ascii=False)}")
-        log_info(f"Request body: {req_data}")
-        log_info(f"Response status: {resp.status_code}")
-        log_info(f"Response headers: {dict(resp.headers)}")
-        log_info(f"Response body: {resp.text}")
+        log_info(f"HTTP {method} {url} status={resp.status_code}")
+
 
     def _request(
         self,
@@ -255,7 +246,7 @@ class MTClient:
             )
             data = resp.json()
         if resp.status_code != 200 or data.get("message") != "SUCCESS":
-            raise RuntimeError(f"Login failed: status={resp.status_code}, body={resp.text}")
+            raise RuntimeError(f"Login failed: HTTP {resp.status_code}")
         self.token = resp.headers.get("Authorization", "")
         self.did = resp.headers.get("Did") or resp.headers.get("did") or self.did
         self.store.put(DB_KEY, self.token)
@@ -289,7 +280,7 @@ class MTClient:
             self.store.delete(DB_KEY)
             raise RuntimeError("Full authentication is required to access this resource")
         if data.get("message") != "SUCCESS":
-            raise RuntimeError(f"Cookie is invalid or expired: {profile.text}")
+            raise RuntimeError("Cookie is invalid or expired")
         member = data.get("data", {}).get("memberCount", {})
         status = data.get("data", {}).get("memberStatus", {})
         self.uploaded = f"{int(member.get('uploaded', 0))/1073741824:.2f} Gb"
@@ -332,22 +323,22 @@ class JobServer:
                     return
                 except Exception as retry_exc:
                     self.failed += 1
-                    self.notify_error(str(retry_exc))
-                    log_info(f"Task execution failed after retry: {retry_exc}")
+                    self.notify_error(type(retry_exc).__name__)
+                    log_info(f"Task execution failed after retry: {type(retry_exc).__name__}")
                     return
             self.failed += 1
             if self.cfg.cookie_mode == "strict" or self.failed > 5:
                 self.client.store.delete(DB_KEY)
                 log_info("Triggered local token cleanup")
-            self.notify_error(str(exc))
-            log_info(f"Task execution failed: {exc}")
+            self.notify_error(type(exc).__name__)
+            log_info(f"Task execution failed: {type(exc).__name__}")
         except Exception as exc:
             self.failed += 1
             if self.cfg.cookie_mode == "strict" or self.failed > 5:
                 self.client.store.delete(DB_KEY)
                 log_info("Triggered local token cleanup")
-            self.notify_error(str(exc))
-            log_info(f"Task execution failed: {exc}")
+            self.notify_error(type(exc).__name__)
+            log_info(f"Task execution failed: {type(exc).__name__}")
 
     def notify_success(self) -> None:
         msg = (
@@ -368,37 +359,6 @@ class JobServer:
                 timeout=10,
             )
             log_info(f"QQPush status={resp.status_code} body={resp.text}")
-        if self.cfg.feishu_webhookurl:
-            resp = std_requests.post(self.cfg.feishu_webhookurl, json={"msg_type": "text", "content": {"text": message}}, timeout=10)
-            log_info(f"Feishu status={resp.status_code} body={resp.text}")
-        if is_error and self.cfg.feishu_app_id and self.cfg.feishu_app_secret and self.cfg.feishu_receive_id:
-            try:
-                token_resp = std_requests.post(
-                    "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
-                    headers={"Content-Type": "application/json; charset=utf-8"},
-                    json={"app_id": self.cfg.feishu_app_id, "app_secret": self.cfg.feishu_app_secret},
-                    timeout=10,
-                )
-                token = token_resp.json().get("tenant_access_token")
-                if token:
-                    msg_resp = std_requests.post(
-                        "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=user_id",
-                        headers={
-                            "Content-Type": "application/json; charset=utf-8",
-                            "Authorization": f"Bearer {token}",
-                        },
-                        json={
-                            "content": json.dumps({"text": message}, ensure_ascii=False),
-                            "msg_type": "text",
-                            "receive_id": self.cfg.feishu_receive_id,
-                        },
-                        timeout=10,
-                    )
-                    log_info(f"FeishuBot status={msg_resp.status_code} body={msg_resp.text}")
-                else:
-                    log_info(f"FeishuBot token failed: {token_resp.text}")
-            except Exception as e:
-                log_info(f"FeishuBot error: {e}")
         if self.cfg.tgbot_token and self.cfg.tgbot_chat_id:
             tg_api = f"https://api.telegram.org/bot{self.cfg.tgbot_token}/sendMessage"
             proxies = None
@@ -454,11 +414,6 @@ def load_config() -> Config:
         tgbot_token=os.getenv("TGBOT_TOKEN", ""),
         tgbot_chat_id=env_int("TGBOT_CHAT_ID", 0),
         tgbot_proxy=os.getenv("TGBOT_PROXY", ""),
-        feishu_webhookurl=os.getenv("FEISHU_WEBHOOKURL", ""),
-        feishu_secret=os.getenv("FEISHU_SECRET", ""),
-        feishu_app_id=os.getenv("FEISHU_APP_ID", ""),
-        feishu_app_secret=os.getenv("FEISHU_APP_SECRET", ""),
-        feishu_receive_id=os.getenv("FEISHU_RECEIVE_ID", ""),
         ntfy_url=os.getenv("NTFY_URL", ""),
         ntfy_topic=os.getenv("NTFY_TOPIC", ""),
         ntfy_user=os.getenv("NTFY_USER", ""),
@@ -516,6 +471,7 @@ def apply_overrides(cfg: Config, args: argparse.Namespace) -> Config:
 
 
 if __name__ == "__main__":
+    os.umask(0o077)
     args = parse_args()
     LOG_FILE_PATH = args.log_file
     cfg = apply_overrides(load_config(), args)
@@ -540,5 +496,5 @@ if __name__ == "__main__":
     job = JobServer(cfg)
     job.run_once()
     log_info("Single-run execution completed, exiting")
-    sys.exit(0)
+    sys.exit(1 if job.failed else 0)
 
