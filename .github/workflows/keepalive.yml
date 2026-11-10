@@ -4,6 +4,12 @@ on:
   schedule:
     - cron: '0 */6 * * *'
   workflow_dispatch:
+    inputs:
+      simulate_failure:
+        description: 'Test failure email notification (skips real login)'
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -32,6 +38,13 @@ jobs:
 
       - name: Run regression tests
         run: python -m unittest discover -s tests -v
+
+      - name: Simulate failure for email notification test
+        if: ${{ inputs.simulate_failure == true }}
+        run: |
+          echo 'Intentional test failure. Real M-Team login was skipped.'
+          echo 'Check your GitHub notification email inbox for this failed run.'
+          exit 1
 
       - name: Check required secrets
         env:

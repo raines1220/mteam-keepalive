@@ -22,6 +22,12 @@
 
 ## 执行与通知
 
+测试失败邮件：到 Actions → M-Team keepalive → Run workflow，勾选
+**Test failure email notification (skips real login)** 后运行。该次运行会故意失败，
+跳过真实登录，GitHub 按个人设置发送失败提醒。请检查 Gmail 收件箱和垃圾邮件。
+测试开关默认为关闭，定时任务正常保活不受影响。此测试验证失败通知链路，
+不会制造真实账号登录失败；登录失败的退出码已由回归测试覆盖。
+
 - UTC 0、6、12、18 点运行，也支持手动触发。调度可能延迟。
 - 直接运行本仓库源码，无需先构建 Docker 镜像或登录 GHCR。
 - 检查失败、登录失败和刷新失败会返回非零退出码，Actions 因此标记为失败，GitHub 再按你的个人通知设置发邮件。
