@@ -11,7 +11,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, Optional
 from urllib.parse import urlencode
 
@@ -33,6 +33,39 @@ LOCAL_CONFIG_OVERRIDES: Dict[str, object] = {
     # "tgbot_chat_id": -1001234567890,
 }
 LOG_FILE_PATH: Optional[str] = None
+MAX_ACTIVITY_AGE_SECONDS = 6 * 60 * 60
+
+
+def parse_activity_time(value: Any) -> datetime:
+    """Normalize API timestamps to UTC; M-Team's unzoned wall times use UTC+8."""
+    if isinstance(value, bool) or value in (None, ""):
+        raise ValueError("Missing activity time")
+    if isinstance(value, (int, float)) or (isinstance(value, str) and value.replace('.', '', 1).isdigit()):
+        timestamp = float(value)
+        if timestamp > 100_000_000_000:
+            timestamp /= 1000
+        return datetime.fromtimestamp(timestamp, timezone.utc)
+    parsed = datetime.fromisoformat(str(value).strip().replace('Z', '+00:00'))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone(timedelta(hours=8)))
+    return parsed.astimezone(timezone.utc)
+
+
+def verify_activity_times(status: Dict[str, Any], now: datetime) -> None:
+    for field in ('lastLogin', 'lastBrowse'):
+        try:
+            timestamp = parse_activity_time(status.get(field))
+        except (ValueError, TypeError, OverflowError, OSError):
+            log_info(f"Activity verification failed: {field} missing or invalid")
+            raise RuntimeError("Activity timestamp missing or invalid") from None
+        age = (now - timestamp).total_seconds()
+        log_info(f"Verified API {field}={timestamp.isoformat()} age_hours={age / 3600:.3f}")
+        if age > MAX_ACTIVITY_AGE_SECONDS:
+            log_info(f"Activity verification failed: {field} is older than 6 hours")
+            raise RuntimeError("Activity timestamp is stale")
+        if age < -300:
+            log_info(f"Activity verification failed: {field} is more than 5 minutes in the future")
+            raise RuntimeError("Activity timestamp is in the future")
 
 
 def log_info(message: str) -> None:
@@ -293,7 +326,16 @@ class MTClient:
         updated = self._post("/api/member/updateLastBrowse", auth=True).json()
         if updated.get("message") != "SUCCESS":
             raise RuntimeError("Connected successfully, but failed to update status")
-        log_info("Status check succeeded, last browse has been refreshed")
+        # Read persisted account state again instead of trusting the update response.
+        verified_profile = self._post("/api/member/profile", auth=True)
+        verified = verified_profile.json()
+        if verified_profile.status_code != 200 or verified.get("message") != "SUCCESS":
+            raise RuntimeError("Failed to read account state after update")
+        verified_status = verified.get("data", {}).get("memberStatus", {})
+        verify_activity_times(verified_status, datetime.now(timezone.utc))
+        self.last_login = verified_status['lastLogin']
+        self.last_browse = verified_status['lastBrowse']
+        log_info("Status check succeeded: API readback confirms lastLogin and lastBrowse within 6 hours")
 
 
 class JobServer:

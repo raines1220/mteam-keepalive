@@ -40,7 +40,7 @@ def main():
             print('FAILED: login or refresh failed. Sensitive server details suppressed.')
             print('Check browser login, system clock, TOTP secret and current site API.')
             return 1
-        print('SUCCESS: server accepted profile check and updateLastBrowse.')
+        print('SUCCESS: API readback confirms lastLogin and lastBrowse within 6 hours.')
         print('Run again to test cache reuse; verify last browse time on the website.')
         return 0
     except Exception as exc:

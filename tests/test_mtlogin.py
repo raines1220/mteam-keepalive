@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock, patch
 
 import mtlogin
@@ -70,6 +71,50 @@ class KeepaliveTests(unittest.TestCase):
             job.run_once()
             self.assertEqual(job.failed, 1)
 
+    def test_activity_age_boundary_and_stale_fields(self):
+        now = datetime(2026, 11, 10, 9, tzinfo=timezone.utc)
+        boundary = (now - timedelta(hours=6)).isoformat()
+        mtlogin.verify_activity_times({'lastLogin': boundary, 'lastBrowse': boundary}, now)
+        for field in ('lastLogin', 'lastBrowse'):
+            status = {'lastLogin': now.isoformat(), 'lastBrowse': now.isoformat()}
+            status[field] = (now - timedelta(hours=6, seconds=1)).isoformat()
+            with self.subTest(field=field), self.assertRaisesRegex(RuntimeError, 'stale'):
+                mtlogin.verify_activity_times(status, now)
+
+    def test_missing_invalid_and_future_activity_fail(self):
+        now = datetime(2026, 11, 10, 9, tzinfo=timezone.utc)
+        for value in (None, '', 'not-a-date', True, float('nan'), (now + timedelta(minutes=6)).isoformat()):
+            with self.subTest(value=value), self.assertRaises(RuntimeError):
+                mtlogin.verify_activity_times({'lastLogin': value, 'lastBrowse': now.isoformat()}, now)
+
+    def test_activity_timezone_and_epoch_formats(self):
+        expected = datetime(2026, 11, 10, 9, tzinfo=timezone.utc)
+        for value in ('2026-11-10T09:00:00Z', '2026-11-10T17:00:00+08:00',
+                      '2026-11-10 17:00:00', expected.timestamp(), expected.timestamp() * 1000):
+            with self.subTest(value=value):
+                self.assertEqual(mtlogin.parse_activity_time(value), expected)
+
+    def test_successful_update_still_fails_when_readback_is_stale(self):
+        client = mtlogin.MTClient(self.cfg)
+        now = datetime.now(timezone.utc)
+        fresh = {'lastLogin': now.isoformat(), 'lastBrowse': now.isoformat()}
+        stale = dict(fresh, lastBrowse=(now - timedelta(hours=7)).isoformat())
+        before = Mock(status_code=200)
+        before.json.return_value = {'message': 'SUCCESS', 'data': {'memberStatus': fresh}}
+        update = Mock(status_code=200)
+        update.json.return_value = {'message': 'SUCCESS'}
+        after = Mock(status_code=200)
+        after.json.return_value = {'message': 'SUCCESS', 'data': {'memberStatus': stale}}
+        try:
+            with patch.object(client, '_func_state'), patch.object(client, '_post', side_effect=[before, update, after]) as post:
+                with self.assertRaisesRegex(RuntimeError, 'stale'):
+                    client.check()
+                self.assertEqual([call.args[0] for call in post.call_args_list], [
+                    '/api/member/profile', '/api/member/updateLastBrowse', '/api/member/profile'])
+        finally:
+            client.store.conn.close()
+            client.session.close()
+
     def test_cli_exit_status_tracks_real_outcome(self):
         # Patch the HTTP transport in subprocesses so this never contacts M-Team.
         root = Path(__file__).resolve().parents[1]
@@ -85,7 +130,9 @@ class KeepaliveTests(unittest.TestCase):
                 setup += (
                     "from unittest.mock import Mock; "
                     "r=Mock(status_code=200,headers={'Authorization':'TOKEN_SENTINEL','Did':'did'},text='TOKEN_SENTINEL'); "
-                    "r.json.return_value={'message':'SUCCESS','data':{}}; "
+                    "from datetime import datetime, timezone; "
+                    "now=datetime.now(timezone.utc).isoformat(); "
+                    "r.json.return_value={'message':'SUCCESS','data':{'memberStatus':{'lastLogin':now,'lastBrowse':now}}}; "
                     "patch.object(requests.Session,'request',return_value=r).start(); "
                 )
             setup += "runpy.run_path('mtlogin.py',run_name='__main__')"
